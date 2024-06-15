@@ -43,6 +43,7 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine_TokenAddressesAndPriceFeedAddressesAmountsDontMatch(); // TokenAddresses和priceFeedAddresses长度不匹配
     error DSCEngine__TransferFailed();
 
+    error DSCEngine_HealthFactorBelowMinimum(uint256 healthFactor); // 健康因子低于最小值
     ///////////////////////
     // 状态变量定义       //
     ///////////////////////
@@ -57,6 +58,10 @@ contract DSCEngine is ReentrancyGuard {
     uint256 private constant PRECISION = 1e18; // 精度
     uint256 private constant ADDITIONAL_FEED_PRECISION = 1e10; // 额外的精度
     uint256 private constant FEED_PRECISION = 1e8; // 预言机精度
+    uint256 private constant MIN_HEALTH_FACTOR = 1; // 最小健康因子
+
+    uint256 private constant LIQUIDATION_THRESHOLD = 50; // 清算阈值
+    uint256 private constant LIQUIDATION_PRECISION = 100; // 清算精度
     ///////////////////////
     // 事件定义       //
     ///////////////////////
@@ -148,7 +153,12 @@ contract DSCEngine is ReentrancyGuard {
     ///////////////////////
     // 内部函数定义       //
     ///////////////////////
-    function _revertIfHealthFactorIsBroken(address user) internal view {}
+    function _revertIfHealthFactorIsBroken(address user) internal view {
+        uint256 healthFactor = _healthFactor(user);
+        if (healthFactor < MIN_HEALTH_FACTOR) {
+            revert DSCEngine_HealthFactorBelowMinimum(healthFactor);
+        }
+    }
 
     // 获取用户健康因子
     function _healthFactor(address user) internal view returns (uint256) {
@@ -156,6 +166,10 @@ contract DSCEngine is ReentrancyGuard {
         // 总dsc
         // 总抵押物价值
         (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
+
+        // 计算健康因子
+        uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
+        return (collateralAdjustedForThreshold * PRECISION) / totalDscMinted;
     }
 
     // 获取用户信息
