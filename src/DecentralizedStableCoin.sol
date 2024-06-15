@@ -70,8 +70,8 @@ contract DecentralizedStableCoin is ERC20Burnable, Ownable {
         if (_amount <= 0) {
             revert DecentralizedStableCoin__AmountMustBeMoreThanZero();
         }
-
-        // 这里调用父合约的_mint函数，没重名，没必要super
+ 
+        // 这里调用父合约的_mint函数，没重名，没必要super！
         _mint(_to, _amount);
         return true;
     }
