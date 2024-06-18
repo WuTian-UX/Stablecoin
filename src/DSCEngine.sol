@@ -41,9 +41,14 @@ contract DSCEngine is ReentrancyGuard {
     error DSCEngine_AmountMustBeMoreThanZero(); // 数量必须大于0
     error DSCEngine_TokenNotAllowed(address token); // token不允许
     error DSCEngine_TokenAddressesAndPriceFeedAddressesAmountsDontMatch(); // TokenAddresses和priceFeedAddresses长度不匹配
-    error DSCEngine__TransferFailed();
 
     error DSCEngine_HealthFactorBelowMinimum(uint256 healthFactor); // 健康因子低于最小值
+    error DSCEngine_MintedFailed(); // 铸造失败
+
+    error DSCEngine__TransferFailed(); // 转账失败
+
+    error DSCEngine_HealthFactorOK(uint256 healthFactor); // 健康因子低于最小值
+    error DSCEngine_HealthFactorNotImproved(uint256 healthFactor); // 健康因子低于最小值
     ///////////////////////
     // 状态变量定义       //
     ///////////////////////
@@ -62,11 +67,17 @@ contract DSCEngine is ReentrancyGuard {
 
     uint256 private constant LIQUIDATION_THRESHOLD = 50; // 清算阈值
     uint256 private constant LIQUIDATION_PRECISION = 100; // 清算精度
+
+    uint256 private constant LIQUIDATION_BONUS = 10; // 清算奖励
     ///////////////////////
     // 事件定义       //
     ///////////////////////
 
     event CollateralDeposited(address indexed user, address indexed token, uint256 amount); // 抵押物存入
+
+    event CollateralRedeemed(address indexed user, address token, uint256 amount); // 抵押物赎回
+    // if
+    // redeemFrom != redeemedTo, then it was liquidated
 
     ///////////////////////
     // 修饰器定义       //
@@ -111,14 +122,30 @@ contract DSCEngine is ReentrancyGuard {
     ///////////////////////
     // 外部函数定义       //
     ///////////////////////
-    function depositCollateralAndMintDsc() external {}
+
+    // 从USD中获取token数量
+    function getTokenAmountFromUsd(address token, uint256 usdAmountInWei) public view returns (uint256) {
+        AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
+        (, int256 price,,,) = priceFeed.latestRoundData(); // 获取最新价格
+        return (usdAmountInWei * PRECISION) / (uint256(price) * ADDITIONAL_FEED_PRECISION);
+    }
+
+    // 存入抵押物并铸造稳定币
+    function depositCollateralAndMintDsc(
+        address tokenCollateralAddress, // 抵押物地址
+        uint256 aoumntCollateral, // 抵押物数量
+        uint256 amountDscToMint // 铸造稳定币数量
+    ) external {
+        depositCollateral(tokenCollateralAddress, aoumntCollateral);
+        mintDSC(amountDscToMint);
+    }
 
     // 从外部合约中存入抵押物
     function depositCollateral(
         address tokenCollateralAddress, // 抵押物地址
         uint256 aoumntCollateral // 抵押物数量
     )
-        external
+        public
         moreThanZero(aoumntCollateral)
         isAllowedToken(tokenCollateralAddress)
         nonReentrant // 不可重入
@@ -133,19 +160,108 @@ contract DSCEngine is ReentrancyGuard {
 
     function depositCollateralForDSC() external {}
 
+    // 赎回抵押物
+    // 赎回后健康因子必须大于最小值
+    function redeemCollateral(
+        address tokenCollateralAddress, // 抵押物地址
+        uint256 amountCollateral // 抵押物数量
+    )
+        public
+        moreThanZero(amountCollateral) // 数量必须大于0
+        nonReentrant // 不可重入
+        isAllowedToken(tokenCollateralAddress)
+    {
+        _redeemCollateral(tokenCollateralAddress, amountCollateral, msg.sender, msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
+
+    function _redeemCollateral(
+        address tokenCollateralAddress, // 抵押物地址
+        uint256 amountCollateral, // 抵押物数量
+        address from,
+        address to
+    ) private {
+        s_collateralDeposited[from][tokenCollateralAddress] -= amountCollateral;
+        emit CollateralRedeemed(from, tokenCollateralAddress, amountCollateral);
+        bool success = IERC20(tokenCollateralAddress).transfer(to, amountCollateral);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+    }
+    // 赎回抵押物换取稳定币
+
+    function redeemCollateralForDsc(
+        address tokenCollateralAddress, // 抵押物地址
+        uint256 amountCollateral, // 抵押物数量
+        uint256 amountDscToBurn // 烧毁稳定币数量
+    ) public {
+        burnDsc(amountDscToBurn);
+        redeemCollateral(tokenCollateralAddress, amountCollateral);
+    }
+
+    function getUsdValue(
+        address token,
+        uint256 amount // in WEI
+    ) external view returns (uint256) {
+        return _getUSDPrice(token, amount);
+    }
+
     // 铸造稳定币
     // 先检查抵押物是否足够 必须比最低阈值大
-    function mintDSC(uint256 amountDscToMint) external moreThanZero(amountDscToMint) nonReentrant {
+
+    function mintDSC(uint256 amountDscToMint) public moreThanZero(amountDscToMint) nonReentrant {
         // 1. 检查抵押物是否足够
         // 2. 铸造稳定币
         s_DSCMinted[msg.sender] += amountDscToMint;
         _revertIfHealthFactorIsBroken(msg.sender);
+        bool minted = i_dsc.mint(msg.sender, amountDscToMint);
+        if (!minted) {
+            revert DSCEngine_MintedFailed();
+        }
     }
 
-    function burnDsc() external {}
+    // 烧毁稳定币
+    function burnDsc(uint256 amount) public moreThanZero(amount) {
+        _burnDsc(amount, msg.sender, msg.sender);
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
 
     // 清算
-    function liquidate() external {}
+    // 帮一个用户清算
+    function liquidate(
+        address collateral, // 抵押物
+        address user, // 被发起清算的用户
+        uint256 debtToCover // 需要清算的债务
+    ) external moreThanZero(debtToCover) nonReentrant {
+        // 假设清算用户 用140美元的eth 拿走了100美元的稳定币？
+        // 假设债务为100美元
+        // 100美元稳定币=多少eth？
+        // 给予额外的10%的奖励
+
+        // 确认被清算用户的健康因子是否低于最小值
+        uint256 startingUserHeleathFactor = _healthFactor(user);
+        if (startingUserHeleathFactor >= MIN_HEALTH_FACTOR) {
+            revert DSCEngine_HealthFactorOK(startingUserHeleathFactor);
+        }
+        uint256 tokenAmountFromDebtCovered = getTokenAmountFromUsd(collateral, debtToCover);
+
+        // 假设0.05eth 奖励是0.005eth
+        uint256 bonusCollateral = (tokenAmountFromDebtCovered * LIQUIDATION_BONUS) / LIQUIDATION_PRECISION;
+
+        uint256 totalCollateralToRedeem = tokenAmountFromDebtCovered + bonusCollateral;
+
+        _redeemCollateral(collateral, totalCollateralToRedeem, user, msg.sender);
+
+        _burnDsc(debtToCover, user, msg.sender);
+
+        uint256 enddingUserHeleathFactor = _healthFactor(user);
+        if (enddingUserHeleathFactor < MIN_HEALTH_FACTOR) {
+            revert DSCEngine_HealthFactorNotImproved(startingUserHeleathFactor);
+        }
+
+        //如果因为清算，破坏了发起清算者的健康因子，那么我们应该抛出异常
+        _revertIfHealthFactorIsBroken(msg.sender);
+    }
 
     // 获取健康情况
     function getHeleathFactor() external view {}
@@ -165,7 +281,7 @@ contract DSCEngine is ReentrancyGuard {
         // 计算健康因子 需要的参数
         // 总dsc
         // 总抵押物价值
-        (uint256 totalDscMinted, uint256 collateralValueInUsd) = _getAccountInformation(user);
+        (uint256 totalDscMinted, uint256 collateralValueInUsd) = getAccountInformation(user);
 
         // 计算健康因子
         uint256 collateralAdjustedForThreshold = (collateralValueInUsd * LIQUIDATION_THRESHOLD) / LIQUIDATION_PRECISION;
@@ -173,8 +289,8 @@ contract DSCEngine is ReentrancyGuard {
     }
 
     // 获取用户信息
-    function _getAccountInformation(address user)
-        private
+    function getAccountInformation(address user)
+        public
         view
         returns (uint256 totalDscMinted, uint256 collateralValueInUsd)
     {
@@ -194,9 +310,23 @@ contract DSCEngine is ReentrancyGuard {
         return totalCollateralValueInUsd;
     }
 
-    function _getUSDPrice(address token, uint256 amount) private view returns (uint256) {
+    // 获取一种代币的USD价格
+    function _getUSDPrice(address token, uint256 amount) public view returns (uint256) {
         AggregatorV3Interface priceFeed = AggregatorV3Interface(s_priceFeeds[token]);
         (, int256 price,,,) = priceFeed.latestRoundData();
         return ((uint256(price) * ADDITIONAL_FEED_PRECISION) * amount) / PRECISION;
+    }
+
+    function _burnDsc(uint256 amountDscToBurn, address onBehalfof, address dscFrom) private {
+        s_DSCMinted[onBehalfof] -= amountDscToBurn;
+        bool success = i_dsc.transferFrom(dscFrom, address(this), amountDscToBurn);
+        if (!success) {
+            revert DSCEngine__TransferFailed();
+        }
+        i_dsc.burn(amountDscToBurn);
+    }
+
+    function getCollateralTokens() external view returns (address[] memory) {
+        return s_collateralTokens;
     }
 }
