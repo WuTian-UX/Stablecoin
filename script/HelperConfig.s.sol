@@ -27,9 +27,11 @@ contract HelperConfig is Script {
     // Constructor          //
     //////////////////////////
     constructor() {
-        if (block.chainid == 1) {
+        console.log(block.chainid);
+        if (block.chainid == 11155111) {
             activeNetworkConfig = getSepoliaEthConfig();
         } else {
+            //31337
             activeNetworkConfig = getOrCreateAnvilEthConfig();
         }
     }
@@ -68,5 +70,6 @@ contract HelperConfig is Script {
             wbtc: address(wbtcMock),
             deployerKey: DEFAULT_ANVIL_PRIVATE_KEY
         });
+        console.log("config", address(wethMock), address(wbtcMock));
     }
 }

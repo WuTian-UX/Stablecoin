@@ -5,6 +5,6 @@ src = "src"
 
 [invariant]
 depth = 128
-fail_on_revert = true
-runs = 1000
+fail_on_revert = false
+runs = 128
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options

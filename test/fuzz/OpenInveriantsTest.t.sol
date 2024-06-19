@@ -26,10 +26,10 @@ contract OpenInveriantsTest is StdInvariant, Test {
         deployer = new DeployDSC();
         (dsc, dsce, config) = deployer.run();
         (,, weth, wbtc,) = config.activeNetworkConfig();
-        console.log(address(weth));
-        console.log(address(wbtc));
+
+        console.log("111");
         // 告诉不变性测试框架我们要测试的合约
-        //targetContract(address(dsce));
+        // targetContract(address(dsce));
         handler = new Handler(dsce, dsc);
         targetContract(address(handler));
     }
@@ -45,9 +45,9 @@ contract OpenInveriantsTest is StdInvariant, Test {
         uint256 wbtcValue = dsce._getUSDPrice(wbtc, totalWbtcDeposied);
 
         console.log("wethValue: ", wethValue);
-        console.log("wbtcValue: ", totalSupply);
-        console.log("wbtcValue: ", totalSupply);
-
-        // assert(wethValue + wbtcValue >= totalSupply);
+        console.log("wbtcValue: ", wbtcValue);
+        console.log("totalSupply: ", totalSupply);
+        console.log("timesMintCallde: ", handler.timesMintIsCalled());
+        assert(wethValue + wbtcValue >= totalSupply);
     }
 }
